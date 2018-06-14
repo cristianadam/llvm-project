@@ -215,6 +215,9 @@ getBufferForFileHandlingRemapping(const CompilerInvocation &Invocation,
   return llvm::MemoryBuffer::getMemBufferCopy(Buffer->getBuffer(), FilePath);
 }
 
+std::recursive_mutex ASTUnit::CacheMutex;
+llvm::StringMap<ASTUnit::ASTUnitCache> ASTUnit::ASTUnitCacheMap;
+
 struct ASTUnit::ASTWriterData {
   SmallString<128> Buffer;
   llvm::BitstreamWriter Stream;
@@ -254,6 +257,16 @@ ASTUnit::~ASTUnit() {
     getDiagnostics().getClient()->EndSourceFile();
   }
 
+  std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+  StringRef MainFilePath = getMainFileName();
+  if (ASTUnitCacheMap.find(MainFilePath) == ASTUnitCacheMap.end())
+    return;
+
+  if (ASTUnitCacheMap[MainFilePath].getRefCount() == 1)
+    ASTUnitCacheMap.erase(MainFilePath);
+  else
+    ASTUnitCacheMap[MainFilePath].Release();
+
   clearFileLevelDecls();
 
   // Free the buffers associated with remapped files. We are required to
@@ -270,6 +283,13 @@ ASTUnit::~ASTUnit() {
 
   if (getenv("LIBCLANG_OBJTRACKING"))
     fprintf(stderr, "--- %u translation units\n", --ActiveASTUnitObjects);
+}
+
+void ASTUnit::initCache() {
+  std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+  StringRef MainFilePath = getMainFileName();
+
+  ASTUnitCacheMap[MainFilePath].Retain();
 }
 
 void ASTUnit::setPreprocessor(std::shared_ptr<Preprocessor> PP) {
@@ -864,6 +884,8 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
   // Tell the diagnostic client that we have started a source file.
   AST->getDiagnostics().getClient()->BeginSourceFile(PP.getLangOpts(), &PP);
 
+  AST->initCache();
+
   return AST;
 }
 
@@ -1104,7 +1126,10 @@ bool ASTUnit::Parse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
            "VFS passed to Parse and VFS in FileMgr are different");
 
   auto CCInvocation = std::make_shared<CompilerInvocation>(*Invocation);
+  auto MainFilePath = getMainFileName();
   if (OverrideMainBuffer) {
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    auto &Preamble = ASTUnitCacheMap[MainFilePath].Preamble;
     assert(Preamble &&
            "No preamble was built, but OverrideMainBuffer is not null");
     Preamble->AddImplicitPreamble(*CCInvocation, VFS, OverrideMainBuffer.get());
@@ -1171,7 +1196,8 @@ bool ASTUnit::Parse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
                                 UserFilesAreVolatile);
   if (!OverrideMainBuffer) {
     checkAndRemoveNonDriverDiags(StoredDiagnostics);
-    TopLevelDeclsInPreamble.clear();
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    ASTUnitCacheMap[MainFilePath].TopLevelDeclsInPreamble.clear();
   }
 
   // Create the source manager.
@@ -1201,11 +1227,16 @@ bool ASTUnit::Parse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
   if (!Act->BeginSourceFile(*Clang.get(), Clang->getFrontendOpts().Inputs[0]))
     return true;
 
-  if (SavedMainFileBuffer)
-    TranslateStoredDiagnostics(getFileManager(), getSourceManager(),
-                               PreambleDiagnostics, StoredDiagnostics);
-  else
-    PreambleSrcLocCache.clear();
+  {
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    if (SavedMainFileBuffer) {
+      TranslateStoredDiagnostics(
+          getFileManager(), getSourceManager(),
+          ASTUnitCacheMap[MainFilePath].PreambleDiagnostics, StoredDiagnostics);
+    } else {
+      ASTUnitCacheMap[MainFilePath].PreambleSrcLocCache.clear();
+    }
+  }
 
   if (llvm::Error Err = Act->Execute()) {
     consumeError(std::move(Err)); // FIXME this drops errors on the floor.
@@ -1307,38 +1338,42 @@ ASTUnit::getMainBufferWithPrecompiledPreamble(
   if (!Bounds.Size)
     return nullptr;
 
-  if (Preamble) {
-    if (Preamble->CanReuse(PreambleInvocationIn, *MainFileBuffer, Bounds,
-                           *VFS)) {
-      // Okay! We can re-use the precompiled preamble.
+  {
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    auto &Preamble = ASTUnitCacheMap[MainFilePath].Preamble;
+    if (Preamble) {
+      if (Preamble->CanReuse(PreambleInvocationIn, *MainFileBuffer, Bounds,
+                             *VFS)) {
+        // Okay! We can re-use the precompiled preamble.
 
-      // Set the state of the diagnostic object to mimic its state
-      // after parsing the preamble.
-      getDiagnostics().Reset();
-      ProcessWarningOptions(getDiagnostics(),
-                            PreambleInvocationIn.getDiagnosticOpts());
-      getDiagnostics().setNumWarnings(NumWarningsInPreamble);
+        // Set the state of the diagnostic object to mimic its state
+        // after parsing the preamble.
+        getDiagnostics().Reset();
+        ProcessWarningOptions(getDiagnostics(),
+                              PreambleInvocationIn.getDiagnosticOpts());
+        getDiagnostics().setNumWarnings(NumWarningsInPreamble);
 
-      PreambleRebuildCountdown = 1;
-      return MainFileBuffer;
-    } else {
-      Preamble.reset();
-      PreambleDiagnostics.clear();
-      TopLevelDeclsInPreamble.clear();
-      PreambleSrcLocCache.clear();
-      PreambleRebuildCountdown = 1;
+        ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown = 1;
+        return MainFileBuffer;
+      } else {
+        Preamble.reset();
+        ASTUnitCacheMap[MainFilePath].PreambleDiagnostics.clear();
+        ASTUnitCacheMap[MainFilePath].TopLevelDeclsInPreamble.clear();
+        ASTUnitCacheMap[MainFilePath].PreambleSrcLocCache.clear();
+        ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown = 1;
+      }
+    }
+    assert(!Preamble && "No Preamble should be stored at that point");
+
+    // If the preamble rebuild counter > 1, it's because we previously
+    // failed to build a preamble and we're not yet ready to try
+    // again. Decrement the counter and return a failure.
+    if (ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown > 1) {
+      --ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown;
+      return nullptr;
     }
   }
 
-  // If the preamble rebuild counter > 1, it's because we previously
-  // failed to build a preamble and we're not yet ready to try
-  // again. Decrement the counter and return a failure.
-  if (PreambleRebuildCountdown > 1) {
-    --PreambleRebuildCountdown;
-    return nullptr;
-  }
-
-  assert(!Preamble && "No Preamble should be stored at that point");
   // If we aren't allowed to rebuild the precompiled preamble, just
   // return now.
   if (!AllowRebuild)
@@ -1371,54 +1406,61 @@ ASTUnit::getMainBufferWithPrecompiledPreamble(
     PreambleInvocationIn.getFrontendOpts().SkipFunctionBodies =
         PreviousSkipFunctionBodies;
 
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
     if (NewPreamble) {
-      Preamble = std::move(*NewPreamble);
-      PreambleRebuildCountdown = 1;
+      ASTUnitCacheMap[MainFilePath].Preamble = std::move(*NewPreamble);
+      ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown = 1;
+      assert(ASTUnitCacheMap[MainFilePath].Preamble && "Preamble wasn't built");
     } else {
       switch (static_cast<BuildPreambleError>(NewPreamble.getError().value())) {
       case BuildPreambleError::CouldntCreateTempFile:
         // Try again next time.
-        PreambleRebuildCountdown = 1;
+        ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown = 1;
         return nullptr;
       case BuildPreambleError::CouldntCreateTargetInfo:
       case BuildPreambleError::BeginSourceFileFailed:
       case BuildPreambleError::CouldntEmitPCH:
       case BuildPreambleError::BadInputs:
         // These erros are more likely to repeat, retry after some period.
-        PreambleRebuildCountdown = DefaultPreambleRebuildInterval;
+        ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown = DefaultPreambleRebuildInterval;
         return nullptr;
       }
       llvm_unreachable("unexpected BuildPreambleError");
     }
   }
 
-  assert(Preamble && "Preamble wasn't built");
-
   TopLevelDecls.clear();
-  TopLevelDeclsInPreamble = Callbacks.takeTopLevelDeclIDs();
-  PreambleTopLevelHashValue = Callbacks.getHash();
+
+  unsigned NewPreambleTopLevelHashValue = Callbacks.getHash();
 
   NumWarningsInPreamble = getDiagnostics().getNumWarnings();
 
   checkAndRemoveNonDriverDiags(NewPreambleDiags);
   StoredDiagnostics = std::move(NewPreambleDiags);
-  PreambleDiagnostics = std::move(NewPreambleDiagsStandalone);
 
+  std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+  ASTUnitCacheMap[MainFilePath].TopLevelDeclsInPreamble = Callbacks.takeTopLevelDeclIDs();
+  ASTUnitCacheMap[MainFilePath].PreambleDiagnostics = std::move(NewPreambleDiagsStandalone);
+
+  auto &PreambleTopLevelHashValue = ASTUnitCacheMap[MainFilePath].PreambleTopLevelHashValue;
   // If the hash of top-level entities differs from the hash of the top-level
   // entities the last time we rebuilt the preamble, clear out the completion
   // cache.
-  if (CurrentTopLevelHashValue != PreambleTopLevelHashValue) {
+  if (NewPreambleTopLevelHashValue != PreambleTopLevelHashValue) {
     CompletionCacheTopLevelHashValue = 0;
-    PreambleTopLevelHashValue = CurrentTopLevelHashValue;
+    PreambleTopLevelHashValue = NewPreambleTopLevelHashValue;
   }
 
   return MainFileBuffer;
 }
 
 void ASTUnit::RealizeTopLevelDeclsFromPreamble() {
-  assert(Preamble && "Should only be called when preamble was built");
+  auto MainFilePath = getMainFileName();
+  std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+  assert(ASTUnitCacheMap[MainFilePath].Preamble && "Should only be called when preamble was built");
 
   std::vector<Decl *> Resolved;
+  auto &TopLevelDeclsInPreamble = ASTUnitCacheMap[MainFilePath].TopLevelDeclsInPreamble;
   Resolved.reserve(TopLevelDeclsInPreamble.size());
   ExternalASTSource &Source = *getASTContext().getExternalSource();
   for (const auto TopLevelDecl : TopLevelDeclsInPreamble) {
@@ -1495,6 +1537,8 @@ ASTUnit::create(std::shared_ptr<CompilerInvocation> CI,
                                      UserFilesAreVolatile);
   AST->ModuleCache = new InMemoryModuleCache;
 
+  AST->initCache();
+
   return AST;
 }
 
@@ -1524,8 +1568,10 @@ ASTUnit *ASTUnit::LoadFromCompilerInvocationAction(
   }
   AST->OnlyLocalDecls = OnlyLocalDecls;
   AST->CaptureDiagnostics = CaptureDiagnostics;
-  if (PrecompilePreambleAfterNParses > 0)
-    AST->PreambleRebuildCountdown = PrecompilePreambleAfterNParses;
+  if (PrecompilePreambleAfterNParses > 0) {
+    std::lock_guard<std::recursive_mutex> Lock(ASTUnit::getCacheMutex());
+    AST->getCache().PreambleRebuildCountdown = PrecompilePreambleAfterNParses;
+  }
   AST->TUKind = Action ? Action->getTranslationUnitKind() : TU_Complete;
   AST->ShouldCacheCodeCompletionResults = CacheCodeCompletionResults;
   AST->IncludeBriefCommentsInCodeCompletion = false;
@@ -1644,6 +1690,8 @@ bool ASTUnit::LoadFromCompilerInvocation(
 
   assert(VFS && "VFS is null");
 
+  initCache();
+
   // We'll manage file buffers ourselves.
   Invocation->getPreprocessorOpts().RetainRemappedFileBuffers = true;
   Invocation->getFrontendOpts().DisableFree = false;
@@ -1652,7 +1700,9 @@ bool ASTUnit::LoadFromCompilerInvocation(
 
   std::unique_ptr<llvm::MemoryBuffer> OverrideMainBuffer;
   if (PrecompilePreambleAfterNParses > 0) {
-    PreambleRebuildCountdown = PrecompilePreambleAfterNParses;
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    ASTUnitCacheMap[getMainFileName()].PreambleRebuildCountdown =
+        PrecompilePreambleAfterNParses;
     OverrideMainBuffer =
         getMainBufferWithPrecompiledPreamble(PCHContainerOps, *Invocation, VFS);
     getDiagnostics().Reset();
@@ -1833,9 +1883,15 @@ bool ASTUnit::Reparse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
   // If we have a preamble file lying around, or if we might try to
   // build a precompiled preamble, do so now.
   std::unique_ptr<llvm::MemoryBuffer> OverrideMainBuffer;
-  if (Preamble || PreambleRebuildCountdown > 0)
-    OverrideMainBuffer =
-        getMainBufferWithPrecompiledPreamble(PCHContainerOps, *Invocation, VFS);
+
+  StringRef MainFilePath = getMainFileName();
+  {
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    if (ASTUnitCacheMap[MainFilePath].Preamble ||
+        ASTUnitCacheMap[MainFilePath].PreambleRebuildCountdown > 0)
+      OverrideMainBuffer = getMainBufferWithPrecompiledPreamble(
+          PCHContainerOps, *Invocation, VFS);
+  }
 
   // Clear out the diagnostics state.
   FileMgr.reset();
@@ -2137,11 +2193,12 @@ void ASTUnit::CodeComplete(
   FrontendOptions &FrontendOpts = CCInvocation->getFrontendOpts();
   CodeCompleteOptions &CodeCompleteOpts = FrontendOpts.CodeCompleteOpts;
   PreprocessorOptions &PreprocessorOpts = CCInvocation->getPreprocessorOpts();
+  StringRef MainFilePath = getMainFileName();
 
   CodeCompleteOpts.IncludeMacros = IncludeMacros &&
                                    CachedCompletionResults.empty();
-  CodeCompleteOpts.IncludeCodePatterns = IncludeCodePatterns;
   CodeCompleteOpts.IncludeGlobals = CachedCompletionResults.empty();
+  CodeCompleteOpts.IncludeCodePatterns = IncludeCodePatterns;
   CodeCompleteOpts.IncludeBriefComments = IncludeBriefComments;
   CodeCompleteOpts.LoadExternal = Consumer.loadExternal();
   CodeCompleteOpts.IncludeFixIts = Consumer.includeFixIts();
@@ -2232,29 +2289,33 @@ void ASTUnit::CodeComplete(
   // point is within the main file, after the end of the precompiled
   // preamble.
   std::unique_ptr<llvm::MemoryBuffer> OverrideMainBuffer;
-  if (Preamble && Line > 1 && hasSameUniqueID(File, OriginalSourceFile)) {
-    OverrideMainBuffer = getMainBufferWithPrecompiledPreamble(
-        PCHContainerOps, Inv, &FileMgr.getVirtualFileSystem(), false, Line - 1);
-  }
+  {
+    std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+    if (ASTUnitCacheMap[MainFilePath].Preamble &&
+        Line > 1 && hasSameUniqueID(File, OriginalSourceFile)) {
+        OverrideMainBuffer = getMainBufferWithPrecompiledPreamble(
+            PCHContainerOps, Inv, &FileMgr.getVirtualFileSystem(), false, Line - 1);
+    }
 
-  // If the main file has been overridden due to the use of a preamble,
-  // make that override happen and introduce the preamble.
-  if (OverrideMainBuffer) {
-    assert(Preamble &&
-           "No preamble was built, but OverrideMainBuffer is not null");
+    // If the main file has been overridden due to the use of a preamble,
+    // make that override happen and introduce the preamble.
+    if (OverrideMainBuffer) {
+      assert(ASTUnitCacheMap[MainFilePath].Preamble &&
+             "No preamble was built, but OverrideMainBuffer is not null");
 
-    IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
-        &FileMgr.getVirtualFileSystem();
-    Preamble->AddImplicitPreamble(Clang->getInvocation(), VFS,
-                                  OverrideMainBuffer.get());
-    // FIXME: there is no way to update VFS if it was changed by
-    // AddImplicitPreamble as FileMgr is accepted as a parameter by this method.
-    // We use on-disk preambles instead and rely on FileMgr's VFS to ensure the
-    // PCH files are always readable.
-    OwnedBuffers.push_back(OverrideMainBuffer.release());
-  } else {
-    PreprocessorOpts.PrecompiledPreambleBytes.first = 0;
-    PreprocessorOpts.PrecompiledPreambleBytes.second = false;
+      IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
+          &FileMgr.getVirtualFileSystem();
+      ASTUnitCacheMap[MainFilePath].Preamble->AddImplicitPreamble(
+          Clang->getInvocation(), VFS, OverrideMainBuffer.get());
+      // FIXME: there is no way to update VFS if it was changed by
+      // AddImplicitPreamble as FileMgr is accepted as a parameter by this
+      // method. We use on-disk preambles instead and rely on FileMgr's VFS to
+      // ensure the PCH files are always readable.
+      OwnedBuffers.push_back(OverrideMainBuffer.release());
+    } else {
+      PreprocessorOpts.PrecompiledPreambleBytes.first = 0;
+      PreprocessorOpts.PrecompiledPreambleBytes.second = false;
+    }
   }
 
   // Disable the preprocessing record if modules are not enabled.
@@ -2347,13 +2408,18 @@ void ASTUnit::TranslateStoredDiagnostics(
     if (!FE)
       continue;
     SourceLocation FileLoc;
-    auto ItFileID = PreambleSrcLocCache.find(SD.Filename);
-    if (ItFileID == PreambleSrcLocCache.end()) {
-      FileID FID = SrcMgr.translateFile(*FE);
-      FileLoc = SrcMgr.getLocForStartOfFile(FID);
-      PreambleSrcLocCache[SD.Filename] = FileLoc;
-    } else {
-      FileLoc = ItFileID->getValue();
+    {
+      std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+      llvm::StringMap<SourceLocation> &PreambleSrcLocCache =
+          ASTUnitCacheMap[getMainFileName()].PreambleSrcLocCache;
+      auto ItFileID = PreambleSrcLocCache.find(SD.Filename);
+      if (ItFileID == PreambleSrcLocCache.end()) {
+        FileID FID = SrcMgr.translateFile(*FE);
+        FileLoc = SrcMgr.getLocForStartOfFile(FID);
+        PreambleSrcLocCache[SD.Filename] = FileLoc;
+      } else {
+        FileLoc = ItFileID->getValue();
+      }
     }
 
     if (FileLoc.isInvalid())
@@ -2492,6 +2558,8 @@ SourceLocation ASTUnit::mapLocationFromPreamble(SourceLocation Loc) const {
   if (SourceMgr)
     PreambleID = SourceMgr->getPreambleFileID();
 
+  std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+  auto &Preamble = ASTUnitCacheMap[getMainFileName()].Preamble;
   if (Loc.isInvalid() || !Preamble || PreambleID.isInvalid())
     return Loc;
 
@@ -2513,6 +2581,8 @@ SourceLocation ASTUnit::mapLocationToPreamble(SourceLocation Loc) const {
   if (SourceMgr)
     PreambleID = SourceMgr->getPreambleFileID();
 
+  std::lock_guard<std::recursive_mutex> Lock(CacheMutex);
+  auto &Preamble = ASTUnitCacheMap[getMainFileName()].Preamble;
   if (Loc.isInvalid() || !Preamble || PreambleID.isInvalid())
     return Loc;
 
