@@ -527,6 +527,22 @@ TEST_F(FormatTest, RemovesEmptyLines) {
                    "  void funk() {}\n"
                    "};",
                    Style));
+
+  Style.KeepLineBreaksForNonEmptyLines = true;
+  Style.ColumnLimit = 0;
+  EXPECT_EQ("int foo(int a,\n"
+            "        int b)\n"
+            "{\n"
+            "}",
+            format("int foo(int a,\n"
+                   "int b) {}",
+                   Style));
+
+  EXPECT_EQ("[]() {\n"
+            "  foo(); }",
+            format("[]() {\n"
+                   "foo(); }",
+                   Style));
 }
 
 TEST_F(FormatTest, RecognizesBinaryOperatorKeywords) {
