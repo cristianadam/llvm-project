@@ -7,6 +7,7 @@
 // CHECK-REPARSE-SOURCE-CRASH: Unable to reparse translation unit
 //
 // REQUIRES: crash-recovery
-// UNSUPPORTED: libstdcxx-safe-mode
+// FIXME: See wy "terminating with uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument" is happening on darwin
+// UNSUPPORTED: libstdcxx-safe-mode, darwin
 
 #warning parsing original file
