@@ -418,7 +418,13 @@ bool FrontendActionFactory::runInvocation(
   if (!Compiler.hasDiagnostics())
     return false;
 
-  Compiler.createSourceManager(*Files);
+#ifdef _WIN32
+  constexpr static bool UserFilesAreVolatile = true;
+#else
+  constexpr static bool UserFilesAreVolatile = false;
+#endif
+
+  Compiler.createSourceManager(*Files, UserFilesAreVolatile);
 
   const bool Success = Compiler.ExecuteAction(*ScopedToolAction);
 

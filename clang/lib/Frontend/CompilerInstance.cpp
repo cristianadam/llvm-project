@@ -382,8 +382,8 @@ FileManager *CompilerInstance::createFileManager(
 
 // Source Manager
 
-void CompilerInstance::createSourceManager(FileManager &FileMgr) {
-  SourceMgr = new SourceManager(getDiagnostics(), FileMgr);
+void CompilerInstance::createSourceManager(FileManager &FileMgr, bool UserFilesAreVolatile) {
+  SourceMgr = new SourceManager(getDiagnostics(), FileMgr, UserFilesAreVolatile);
 }
 
 // Initialize the remapping of files to alternative contents, e.g.,

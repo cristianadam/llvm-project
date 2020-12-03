@@ -638,7 +638,7 @@ public:
   createFileManager(IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
 
   /// Create the source manager and replace any existing one with it.
-  void createSourceManager(FileManager &FileMgr);
+  void createSourceManager(FileManager &FileMgr, bool UserFilesAreVolatile = false);
 
   /// Create the preprocessor, using the invocation, file, and source managers,
   /// and replace any existing one with it.
