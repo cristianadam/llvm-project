@@ -48,3 +48,16 @@ add_clang_library(clang-cpp
                   ${_OBJECTS}
                   LINK_LIBS
                   ${_DEPS})
+
+if(MSVC)
+  include(GenerateDefFile)
+  generate_def_file(TARGET clang-cpp CONTENT ${_OBJECTS})
+
+  add_custom_target(clang-cpp-exports
+                    DEPENDS ${_OBJECTS} ${CMAKE_CURRENT_BINARY_DIR}/clang-cpp.def)
+
+  add_dependencies(clang-cpp clang-cpp-exports)
+
+  set_property(TARGET clang-cpp APPEND_STRING PROPERTY
+                      LINK_FLAGS " /DEF:\"${CMAKE_CURRENT_BINARY_DIR}/clang-cpp.def\"")
+endif()

@@ -11,10 +11,6 @@ if(LLVM_LINK_LLVM_DYLIB AND LLVM_DYLIB_EXPORTED_SYMBOL_FILE)
 endif()
 
 if(LLVM_BUILD_LLVM_DYLIB)
-  if(MSVC)
-    message(FATAL_ERROR "Generating libLLVM is not supported on MSVC")
-  endif()
-
   llvm_map_components_to_libnames(LIB_NAMES ${LLVM_DYLIB_COMPONENTS})
 
   # Exclude libLLVMTableGen for the following reasons:
@@ -55,6 +51,31 @@ if(LLVM_BUILD_LLVM_DYLIB)
   endif()
 
   target_link_libraries(LLVM PRIVATE ${LIB_NAMES})
+
+  if(MSVC)
+    target_compile_definitions(LLVM
+      PRIVATE LLVM_ATTRIBUTE_DLLEXPORT
+      INTERFACE LLVM_USE_DLLIMPORT)
+
+    foreach(lib ${LIB_NAMES})
+        list(APPEND _LIBRARIES $<TARGET_FILE:${lib}>)
+    endforeach()
+
+    include(GenerateDefFile)
+    generate_def_file(TARGET LLVM CONTENT ${_LIBRARIES})
+
+    add_custom_target(libLLVMExports
+                    DEPENDS ${LIB_NAMES} ${CMAKE_CURRENT_BINARY_DIR}/LLVM.def)
+
+    set_property(TARGET LLVM APPEND_STRING PROPERTY
+                        LINK_FLAGS " /DEF:\"${CMAKE_CURRENT_BINARY_DIR}/LLVM.def\"")
+
+    if (LLVM_INTEGRATED_CRT_ALLOC)
+        # Make sure we search LLVMSupport first, before the CRT libs
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -INCLUDE:malloc")
+    endif()
+  endif()
+
 
   if (APPLE)
     set_property(TARGET LLVM APPEND_STRING PROPERTY

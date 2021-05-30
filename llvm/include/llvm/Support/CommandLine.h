@@ -235,9 +235,11 @@ public:
 };
 
 // A special subcommand representing no subcommand
+LLVM_ATTRIBUTE_DLLIMPORT
 extern ManagedStatic<SubCommand> TopLevelSubCommand;
 
 // A special subcommand that can be used to put an option into all subcommands.
+LLVM_ATTRIBUTE_DLLIMPORT
 extern ManagedStatic<SubCommand> AllSubCommands;
 
 //===----------------------------------------------------------------------===//
