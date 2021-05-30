@@ -250,6 +250,30 @@
 #define LLVM_ATTRIBUTE_NORETURN
 #endif
 
+#if defined(_MSC_VER)
+#if defined(LLVM_ATTRIBUTE_DLLEXPORT)
+#define LLVM_ATTRIBUTE_DLLIMPORT __declspec(dllexport)
+#elif (LLVM_USE_DLLIMPORT)
+#define LLVM_ATTRIBUTE_DLLIMPORT __declspec(dllimport)
+#else
+#define LLVM_ATTRIBUTE_DLLIMPORT
+#endif
+#else
+#define LLVM_ATTRIBUTE_DLLIMPORT
+#endif
+
+#if defined(_MSC_VER)
+#if defined(CLANG_ATTRIBUTE_DLLEXPORT)
+#define CLANG_ATTRIBUTE_DLLIMPORT __declspec(dllexport)
+#elif (CLANG_USE_DLLIMPORT)
+#define CLANG_ATTRIBUTE_DLLIMPORT __declspec(dllimport)
+#else
+#define CLANG_ATTRIBUTE_DLLIMPORT
+#endif
+#else
+#define CLANG_ATTRIBUTE_DLLIMPORT
+#endif
+
 #if __has_attribute(returns_nonnull) || LLVM_GNUC_PREREQ(4, 9, 0)
 #define LLVM_ATTRIBUTE_RETURNS_NONNULL __attribute__((returns_nonnull))
 #elif defined(_MSC_VER)
