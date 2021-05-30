@@ -20,6 +20,15 @@ foreach (lib ${clang_libs})
     list(APPEND _DEPS $<TARGET_PROPERTY:${lib},INTERFACE_LINK_LIBRARIES>)
   endif()
 
+  if (MSVC AND CLANG_LINK_CLANG_DYLIB)
+    foreach(n ${lib} obj.${lib} ${lib}_static)
+      if (TARGET ${n})
+        target_compile_definitions(${n}
+          PRIVATE CLANG_ATTRIBUTE_DLLEXPORT)
+      endif()
+    endforeach()
+  endif()
+
   # clang libraries are redundant since we are linking all the individual
   # object files into libclang-cpp.so, so filter them out from _DEPS.
   # This avoids problems with LLVM global data when building with
@@ -52,4 +61,22 @@ add_clang_library(clang-cpp
 # reduce dynamic relocations.
 if (NOT APPLE AND NOT MINGW)
   target_link_options(clang-cpp PRIVATE LINKER:-Bsymbolic-functions)
+endif()
+
+if(MSVC)
+  include(GenerateDefFile)
+  generate_def_file(TARGET clang-cpp CONTENT ${_OBJECTS})
+
+  target_compile_definitions(clang-cpp
+    PRIVATE CLANG_ATTRIBUTE_DLLEXPORT
+    INTERFACE CLANG_USE_DLLIMPORT
+    PUBLIC LLVM_USE_DLLIMPORT)
+
+  add_custom_target(clang-cpp-exports
+                    DEPENDS ${_OBJECTS} ${CMAKE_CURRENT_BINARY_DIR}/clang-cpp.def)
+
+  add_dependencies(clang-cpp clang-cpp-exports)
+
+  set_property(TARGET clang-cpp APPEND_STRING PROPERTY
+                      LINK_FLAGS " /DEF:\"${CMAKE_CURRENT_BINARY_DIR}/clang-cpp.def\"")
 endif()

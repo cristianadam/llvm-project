@@ -110,6 +110,16 @@ macro(add_clang_library name)
     list(APPEND libs ${name}_static)
   endif()
 
+  if (MSVC AND CLANG_LINK_CLANG_DYLIB)
+    foreach(n ${name} obj.${name} ${name}_static)
+      if (TARGET ${n})
+        target_compile_definitions(${n}
+          PUBLIC CLANG_USE_DLLIMPORT
+          PUBLIC LLVM_USE_DLLIMPORT)
+      endif()
+    endforeach()
+  endif()
+
   foreach(lib ${libs})
     if(TARGET ${lib})
       target_link_libraries(${lib} INTERFACE ${LLVM_COMMON_LIBS})

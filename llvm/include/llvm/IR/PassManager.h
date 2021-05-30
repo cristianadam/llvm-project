@@ -92,7 +92,7 @@ public:
   static AnalysisSetKey *ID() { return &SetKey; }
 
 private:
-  static AnalysisSetKey SetKey;
+  LLVM_ATTRIBUTE_DLLIMPORT static AnalysisSetKey SetKey;
 };
 
 template <typename IRUnitT> AnalysisSetKey AllAnalysesOn<IRUnitT>::SetKey;
@@ -115,7 +115,7 @@ public:
   static AnalysisSetKey *ID() { return &SetKey; }
 
 private:
-  static AnalysisSetKey SetKey;
+  LLVM_ATTRIBUTE_DLLIMPORT static AnalysisSetKey SetKey;
 };
 
 /// A set of analyses that are preserved following a run of a transformation
@@ -346,7 +346,7 @@ public:
 
 private:
   /// A special key used to indicate all analyses.
-  static AnalysisSetKey AllAnalysesKey;
+  LLVM_ATTRIBUTE_DLLIMPORT static AnalysisSetKey AllAnalysesKey;
 
   /// The IDs of analyses and analysis sets that are preserved.
   SmallPtrSet<void *, 2> PreservedIDs;
@@ -600,7 +600,7 @@ using FunctionPassManager = PassManager<Function>;
 class PassInstrumentationAnalysis
     : public AnalysisInfoMixin<PassInstrumentationAnalysis> {
   friend AnalysisInfoMixin<PassInstrumentationAnalysis>;
-  static AnalysisKey Key;
+  LLVM_ATTRIBUTE_DLLIMPORT static AnalysisKey Key;
 
   PassInstrumentationCallbacks *Callbacks;
 
@@ -1006,7 +1006,7 @@ private:
   friend AnalysisInfoMixin<
       InnerAnalysisManagerProxy<AnalysisManagerT, IRUnitT>>;
 
-  static AnalysisKey Key;
+  LLVM_ATTRIBUTE_DLLIMPORT static AnalysisKey Key;
 
   AnalysisManagerT *InnerAM;
 };
@@ -1158,7 +1158,7 @@ private:
   friend AnalysisInfoMixin<
       OuterAnalysisManagerProxy<AnalysisManagerT, IRUnitT, ExtraArgTs...>>;
 
-  static AnalysisKey Key;
+  LLVM_ATTRIBUTE_DLLIMPORT static AnalysisKey Key;
 
   const AnalysisManagerT *OuterAM;
 };

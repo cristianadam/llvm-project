@@ -100,7 +100,7 @@ public:
   //"--extra-arg-before" options.
   ArgumentsAdjuster getArgumentsAdjuster() { return Adjuster; }
 
-  static const char *const HelpMessage;
+  CLANG_ATTRIBUTE_DLLIMPORT static const char *const HelpMessage;
 
 private:
   CommonOptionsParser() = default;
