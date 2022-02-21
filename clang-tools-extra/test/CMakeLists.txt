@@ -80,6 +80,7 @@ foreach(dep ${LLVM_UTILS_DEPS})
   endif()
 endforeach()
 
+#[[
 if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
   llvm_add_library(
       CTTestTidyModule
@@ -106,6 +107,7 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
       endif()
   endif()
 endif()
+#]]
 
 add_lit_testsuite(check-clang-tools "Running the Clang extra tools' regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
